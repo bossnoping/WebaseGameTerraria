@@ -27,7 +27,7 @@ export default function PhaseControls({ onTurnStarted }: { onTurnStarted: () => 
   }, [drawPhase, setCamera]);
 
   const restart = useCallback(() => {
-    useGame.getState().newGame(['melee', 'mage']);
+    useGame.getState().restartGame();
     onTurnStarted();
   }, [onTurnStarted]);
 

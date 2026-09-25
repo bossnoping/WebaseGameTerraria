@@ -1,4 +1,4 @@
-import type { Card } from '../game/types';
+import type { Card, CharacterClass } from '../game/types';
 
 export const CARDS: Record<string, Card> = {
   iron_sword: {
@@ -30,6 +30,7 @@ export const CARDS: Record<string, Card> = {
     description: 'Gain +10 Defense until the end of the turn.',
     effect: 'shield',
     copies: 1,
+    classes: ['melee'],
   },
   healing_potion: {
     id: 'healing_potion',
@@ -50,6 +51,7 @@ export const CARDS: Record<string, Card> = {
     description: 'Arcane barrier. Grant +5 Defense to all allies.',
     effect: 'mana_shield',
     copies: 1,
+    classes: ['mage'],
   },
   taunt: {
     id: 'taunt',
@@ -59,6 +61,7 @@ export const CARDS: Record<string, Card> = {
     description: 'Force the boss to attack the Melee guardian this turn.',
     effect: 'taunt',
     copies: 1,
+    classes: ['melee'],
   },
   summon_minion: {
     id: 'summon_minion',
@@ -69,6 +72,7 @@ export const CARDS: Record<string, Card> = {
     description: 'Summon a minion that strikes the boss for 6 each turn.',
     effect: 'summon',
     copies: 1,
+    classes: ['summoner'],
   },
   precision_shot: {
     id: 'precision_shot',
@@ -79,14 +83,99 @@ export const CARDS: Record<string, Card> = {
     description: 'A perfectly aimed arrow. Deals 25 damage.',
     effect: 'precision_shot',
     copies: 2,
+    classes: ['ranged'],
+  },
+  // ---- spellbook additions: more decisions, more Mana pressure ----------
+  fireball: {
+    id: 'fireball',
+    name: 'Fireball',
+    type: 'spell',
+    cost: 3,
+    damage: 24,
+    description: 'A roaring blast. Deals 24 damage to the boss.',
+    effect: 'fireball',
+    copies: 1,
+    classes: ['mage'],
+  },
+  dark_bolt: {
+    id: 'dark_bolt',
+    name: 'Dark Bolt',
+    type: 'spell',
+    cost: 3,
+    damage: 22,
+    description: 'Cursed shadow. Deals 22 damage to the boss.',
+    effect: 'dark_bolt',
+    copies: 1,
+    classes: ['summoner'],
+  },
+  volley: {
+    id: 'volley',
+    name: 'Arrow Volley',
+    type: 'weapon',
+    cost: 3,
+    damage: 9,
+    hits: 3,
+    description: 'Three arrows in quick succession: 3 × 9 damage.',
+    effect: 'volley',
+    copies: 1,
+    classes: ['ranged'],
+  },
+  mana_potion: {
+    id: 'mana_potion',
+    name: 'Mana Potion',
+    type: 'potion',
+    cost: 0,
+    manaRestore: 3,
+    description: 'Restore 3 Mana. Chain it into a bigger turn.',
+    effect: 'mana_potion',
+    copies: 1,
+  },
+  armor_break: {
+    id: 'armor_break',
+    name: 'Shield Shatter',
+    type: 'weapon',
+    cost: 2,
+    armorBreak: 8,
+    damage: 8,
+    description: 'Deal 8 damage and strip 8 boss armor.',
+    effect: 'armor_break',
+    copies: 1,
   },
 };
 
-export const STARTING_DECK: Card[] = Object.values(CARDS).flatMap((card) =>
-  Array.from({ length: card.copies ?? 1 }, () => ({ ...card })),
-);
+export const STARTING_DECK: Card[] = Object.values(CARDS)
+  .filter((card) => !card.classes)
+  .flatMap((card) => Array.from({ length: card.copies ?? 1 }, () => ({ ...card })));
+
+/**
+ * Builds a deck from the chosen guardians. Shared cards go in once, then each
+ * class folds in its signature cards so every role plays differently.
+ */
+export function buildStartingDeck(classes: CharacterClass[]): Card[] {
+  const deck = STARTING_DECK.map((card) => ({ ...card }));
+  for (const card of Object.values(CARDS)) {
+    if (!card.classes || !card.classes.some((c) => classes.includes(c))) continue;
+    deck.push(...Array.from({ length: card.copies ?? 1 }, () => ({ ...card })));
+  }
+  return deck;
+}
 
 export const HAND_SIZE = 5;
+export const MANA_PER_TURN = 4;
+
+/**
+ * The party shares one hand and one Mana pool, so both have to grow with the
+ * party. Scaling only the boss (as an earlier pass did) made two- and
+ * three-guardian runs mathematically unwinnable: the boss gained 1.3× HP per
+ * extra guardian while the party gained no extra actions.
+ */
+export function handSizeForParty(partySize: number): number {
+  return HAND_SIZE + Math.max(0, partySize - 1) * 2;
+}
+
+export function manaForParty(partySize: number): number {
+  return MANA_PER_TURN + Math.max(0, partySize - 1);
+}
 
 /** Default hand crafted for the scripted demo: exactly matches the scripted script. */
 export const DEMO_HAND_ORDER = [

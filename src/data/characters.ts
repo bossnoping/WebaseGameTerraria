@@ -9,8 +9,8 @@ export interface CharacterDefinition {
   /** Base defense always applied, before armor cards */
   baseDefense: number;
   accent: string;
+  icon: string;
   abilities: { name: string; cost: number; effect: string }[];
-  slot: number;
 }
 
 export const CHARACTERS: Record<CharacterClass, CharacterDefinition> = {
@@ -22,9 +22,9 @@ export const CHARACTERS: Record<CharacterClass, CharacterDefinition> = {
     maxHp: 100,
     baseDefense: 5,
     accent: '#d8b06a',
-    slot: 0,
+    icon: '⚔️',
     abilities: [
-      { name: 'Iron Shield', cost: 2, effect: 'Increase your defense.' },
+      { name: 'Iron Shield', cost: 2, effect: 'Increase your defense by 10.' },
       { name: 'Taunt', cost: 2, effect: 'Force the boss to attack you.' },
     ],
   },
@@ -36,10 +36,11 @@ export const CHARACTERS: Record<CharacterClass, CharacterDefinition> = {
     maxHp: 80,
     baseDefense: 0,
     accent: '#59a6ff',
-    slot: 1,
+    icon: '🔮',
     abilities: [
-      { name: 'Mana Shield', cost: 2, effect: 'Increase ally defense.' },
+      { name: 'Mana Shield', cost: 2, effect: 'Grant +5 Defense to all allies.' },
       { name: 'Water Bolt', cost: 2, effect: 'Deal 15 damage to the boss.' },
+      { name: 'Fireball', cost: 3, effect: 'Deal 24 damage to the boss.' },
     ],
   },
   summoner: {
@@ -50,29 +51,38 @@ export const CHARACTERS: Record<CharacterClass, CharacterDefinition> = {
     maxHp: 85,
     baseDefense: 0,
     accent: '#c084fc',
-    slot: 1,
+    icon: '👁️',
     abilities: [
       { name: 'Summon Minion', cost: 2, effect: 'Summon a creature that attacks the boss.' },
+      { name: 'Dark Bolt', cost: 3, effect: 'Deal 22 damage to the boss.' },
     ],
   },
   ranged: {
     className: 'ranged',
-    name: 'Long-Range',
+    name: 'Ranger',
     role: 'Ranged Damage',
     blurb: 'Light armor, long sightlines, one arrow at a time.',
     maxHp: 90,
     baseDefense: 0,
     accent: '#7ee08a',
-    slot: 1,
+    icon: '🏹',
     abilities: [
-      { name: 'Precision Shot', cost: 2, effect: 'Deal high single-target damage.' },
+      { name: 'Precision Shot', cost: 2, effect: 'Deal 25 damage to the boss.' },
+      { name: 'Arrow Volley', cost: 3, effect: 'Deal 3 × 9 damage to the boss.' },
     ],
   },
 };
 
 export const CHARACTER_ORDER: CharacterClass[] = ['melee', 'mage', 'summoner', 'ranged'];
 
-export function createPlayer(className: CharacterClass, hpOverride?: number): Player {
+/** Slot i in the party decides where a guardian stands in the arena. */
+export function slotPosition(slot: number): [number, number, number] {
+  if (slot === 0) return [-7.2, 1.4, 6];
+  if (slot === 1) return [0, 1.4, 7.6];
+  return [7.2, 1.4, 6];
+}
+
+export function createPlayer(className: CharacterClass, slot: number, hpOverride?: number): Player {
   const def = CHARACTERS[className];
   return {
     id: className,
@@ -86,12 +96,17 @@ export function createPlayer(className: CharacterClass, hpOverride?: number): Pl
     armorBonus: 0,
     alive: true,
     taunting: false,
-    slot: def.slot,
+    slot,
     animState: 'IDLE',
   };
 }
 
+/** Builds a party in the order the player chose their roles. */
+export function createParty(classes: CharacterClass[]): Player[] {
+  return classes.map((c, i) => createPlayer(c, i));
+}
+
 /** The demo roster: one melee tank and one mage damage/support. */
 export function createDemoRoster(): Player[] {
-  return [createPlayer('melee', 100), createPlayer('mage', 80)];
+  return [createPlayer('melee', 0, 100), createPlayer('mage', 1, 80)];
 }

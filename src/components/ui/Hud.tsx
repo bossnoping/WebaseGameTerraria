@@ -27,6 +27,7 @@ export function BossHud() {
   const setCamera = useGame((s) => s.setCamera);
   const phase = useGame((s) => s.phase);
   const intent = boss.intent;
+  const showIntent = phase !== 'INTRO' && phase !== 'VICTORY' && phase !== 'DEFEAT';
 
   return (
     <div className="hud hud--top">
@@ -34,6 +35,9 @@ export function BossHud() {
         <span className="hud__label">BOSS</span>
         <span className="hud__subtitle">{boss.subtitle}</span>
         {boss.enraged && boss.hp > 0 && <span className="badge badge--enraged">⚡ ENRAGED</span>}
+        {boss.defense > 0 && boss.hp > 0 && (
+          <span className="badge badge--armor">🛡 {boss.defense} ARMOR</span>
+        )}
         {boss.hp <= 0 && <span className="badge badge--victory">☠ DEFEATED</span>}
       </div>
       <h2 className="hud__boss-name" onClick={() => setCamera('BOSS')} title="Focus the boss camera">
@@ -49,11 +53,19 @@ export function BossHud() {
           PHASE <b>{PHASE_INFO[phase]?.title ?? phase}</b>
         </span>
       </div>
-      {intent && (phase === 'BOSS_ACTION' || phase === 'RESOLUTION') && (
-        <div className="intent-card">
-          <div className="intent-card__tag">BOSS CARD</div>
-          <div className="intent-card__name">{intent.name}</div>
-          <div className="intent-card__dmg">Damage: {intent.damage}</div>
+      {intent && showIntent && (
+        <div className={`intent-card ${phase === 'DRAW' || phase === 'PLAYER_ACTION' ? 'intent-card--preview' : ''}`}>
+          <div className="intent-card__tag">
+            {phase === 'DRAW' || phase === 'PLAYER_ACTION' ? 'INCOMING · PREVIEW' : 'BOSS CARD'}
+          </div>
+          <div className="intent-card__name">
+            {intent.name}
+            {intent.aoe && <span className="intent-card__aoe">AOE</span>}
+          </div>
+          <div className="intent-card__dmg">
+            Damage: {intent.damage}
+            {intent.lifesteal ? ` · Heals ${intent.lifesteal}` : ''}
+          </div>
         </div>
       )}
     </div>
@@ -148,21 +160,44 @@ export function PhaseBanner() {
 
 export function DamageFormula() {
   const breakdown = useGame((s) => s.damageBreakdown);
+  const hits = useGame((s) => s.resolutionHits);
   if (!breakdown) return null;
+
+  const multi = hits.length > 1;
   return (
     <div className="formula">
       <div className="formula__title">RESOLUTION — {breakdown.targetName}</div>
-      <div className="formula__line">
-        <span className="formula__num formula__num--dmg">{breakdown.raw} DAMAGE</span>
-        <span className="formula__op">−</span>
-        <span className="formula__num formula__num--def">{breakdown.defense} DEFENSE</span>
-        <span className="formula__op">=</span>
-        <span className="formula__num formula__num--final">{breakdown.final} DAMAGE</span>
-      </div>
+      {multi ? (
+        <>
+          <div className="formula__line">
+            <span className="formula__num formula__num--dmg">{breakdown.raw} DAMAGE · AOE</span>
+            <span className="formula__op">→</span>
+            <span className="formula__num formula__num--final">{breakdown.final} TOTAL</span>
+          </div>
+          <div className="formula__hits">
+            {hits.map((h) => (
+              <span key={h.targetId} className={h.final > 0 ? '' : 'formula__hit--blocked'}>
+                {h.targetName}: {h.raw}−{h.defense}={h.final}
+                {h.down ? ' · DOWN' : ''}
+              </span>
+            ))}
+          </div>
+        </>
+      ) : (
+        <div className="formula__line">
+          <span className="formula__num formula__num--dmg">{breakdown.raw} DAMAGE</span>
+          <span className="formula__op">−</span>
+          <span className="formula__num formula__num--def">{breakdown.defense} DEFENSE</span>
+          <span className="formula__op">=</span>
+          <span className="formula__num formula__num--final">{breakdown.final} DAMAGE</span>
+        </div>
+      )}
       <div className="formula__note">
         {breakdown.final === 0
           ? `${breakdown.targetName} blocks the attack completely.`
-          : `${breakdown.targetName} takes ${breakdown.final} damage.`}
+          : multi
+            ? `The sweep lands across ${hits.length} guardians.`
+            : `${breakdown.targetName} takes ${breakdown.final} damage.`}
       </div>
     </div>
   );
