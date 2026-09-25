@@ -66,7 +66,7 @@ export const HOW_TO_PLAY = [
   {
     step: 1,
     title: 'DRAW',
-    body: 'Draw up to 5 cards and refill Mana to 4 every turn.',
+    body: 'Draw a full hand and refill Mana every turn. Both scale with the party.',
   },
   {
     step: 2,

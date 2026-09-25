@@ -11,6 +11,8 @@ export type CardType = 'weapon' | 'armor' | 'potion' | 'spell';
 
 export type CharacterClass = 'melee' | 'mage' | 'summoner' | 'ranged';
 
+export type Difficulty = 'normal' | 'hard' | 'nightmare';
+
 export interface Card {
   id: string;
   name: string;
@@ -19,23 +21,39 @@ export interface Card {
   damage?: number;
   defense?: number;
   healing?: number;
+  /** How many times the card hits its target. Defaults to 1. */
+  hits?: number;
+  /** Restores this much Mana to the pool when played. */
+  manaRestore?: number;
+  /** Strips this much armor from the boss when played. */
+  armorBreak?: number;
+  /** Restores this much HP to every living ally when played. */
+  teamHealing?: number;
   /** Human readable effect, shown on hover */
   description: string;
   /** Which 3D / audio effect to play when this card resolves */
   effect: CardEffect;
   /** Optional max copies of this card in a starting deck */
   copies?: number;
+  /** Which guardian classes carry this card; omitted means every deck. */
+  classes?: CharacterClass[];
 }
 
 export type CardEffect =
   | 'slash'
   | 'water_bolt'
+  | 'fireball'
+  | 'dark_bolt'
+  | 'volley'
   | 'shield'
   | 'taunt'
   | 'mana_shield'
   | 'summon'
   | 'precision_shot'
-  | 'heal';
+  | 'heal'
+  | 'life_steal'
+  | 'mana_potion'
+  | 'armor_break';
 
 export interface Player {
   id: string;
@@ -57,7 +75,7 @@ export interface Player {
   alive: boolean;
   /** Boss is forced to target this player while taunted */
   taunting: boolean;
-  /** Which player slot in the arena (0 or 1) */
+  /** Which player slot in the arena (0, 1 or 2) */
   slot: number;
   animState: PlayerAnimState;
 }
@@ -82,6 +100,10 @@ export interface BossActionCard {
   name: string;
   damage: number;
   description: string;
+  /** Strikes every living guardian instead of a single target. */
+  aoe?: boolean;
+  /** The boss heals for this much when the attack lands. */
+  lifesteal?: number;
 }
 
 export interface BossState {
@@ -106,6 +128,17 @@ export interface DamageBreakdown {
   targetName: string;
 }
 
+/** One guardian's slice of a boss attack; Resolution may apply several. */
+export interface ResolutionHit {
+  targetId: string;
+  targetName: string;
+  raw: number;
+  defense: number;
+  final: number;
+  hpAfter: number;
+  down: boolean;
+}
+
 export interface LogEntry {
   id: number;
   text: string;
@@ -125,6 +158,8 @@ export interface GameState {
 
   mana: number;
   maxMana: number;
+  /** Hand size for the current party; grows with the number of guardians. */
+  handSize: number;
 
   /** id of the player currently acting (Player Action phase is shared in this prototype) */
   activePlayerId: string;
@@ -133,6 +168,11 @@ export interface GameState {
 
   log: LogEntry[];
   damageBreakdown: DamageBreakdown | null;
+  /** Every guardian struck by the current resolution, in order. */
+  resolutionHits: ResolutionHit[];
+
+  /** Difficulty chosen on the party screen; scales the boss. */
+  difficulty: Difficulty;
 
   /** Cards played this turn, for the resolution summary */
   playedThisTurn: string[];

@@ -5,6 +5,7 @@ import { BossHud, DamageFormula, EventLog, PhaseBanner, PlayerHud } from '../com
 import PhaseControls from '../components/ui/PhaseControls';
 import CardHand from '../components/cards/CardHand';
 import { CHARACTER_ORDER, CHARACTERS } from '../data/characters';
+import { DIFFICULTIES } from '../data/bosses';
 
 function DemoOverlay() {
   const demoRunning = useGame((s) => s.demoRunning);
@@ -53,7 +54,12 @@ function ResultOverlay() {
   const defeat = useGame((s) => s.defeat);
   const boss = useGame((s) => s.boss);
   const turn = useGame((s) => s.turn);
+  const players = useGame((s) => s.players);
+  const difficulty = useGame((s) => s.difficulty);
+  const restart = useGame((s) => s.restartGame);
   if (!victory && !defeat) return null;
+
+  const survivors = players.filter((p) => p.alive).length;
 
   return (
     <div className={`overlay overlay--result ${victory ? 'overlay--victory' : 'overlay--defeat'}`}>
@@ -72,7 +78,14 @@ function ResultOverlay() {
           <span>
             Boss HP: {boss.hp} / {boss.maxHp}
           </span>
+          <span>{DIFFICULTIES[difficulty].label}</span>
+          <span>
+            Survivors: {survivors} / {players.length}
+          </span>
         </div>
+        <button type="button" className="btn btn--primary btn--large" onClick={restart}>
+          ↻ RUN IT AGAIN
+        </button>
       </div>
     </div>
   );

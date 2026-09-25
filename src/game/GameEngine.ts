@@ -1,7 +1,7 @@
 import { create } from 'zustand';
-import { CARDS, HAND_SIZE, STARTING_DECK } from '../data/cards';
-import { createDemoRoster, createPlayer } from '../data/characters';
-import { EYE_OF_CTHULHU } from '../data/bosses';
+import { CARDS, HAND_SIZE, buildStartingDeck, handSizeForParty, manaForParty } from '../data/cards';
+import { createDemoRoster, createParty, slotPosition } from '../data/characters';
+import { EYE_OF_CTHULHU, scaleBossForParty } from '../data/bosses';
 import { playSound } from '../systems/audio';
 import type {
   BossActionCard,
@@ -9,16 +9,20 @@ import type {
   CameraMode,
   CharacterClass,
   DamageBreakdown,
+  Difficulty,
   FloatingNumber,
   GameEffectEvent,
   GamePhase,
   GameState,
   LogEntry,
   Player,
+  ResolutionHit,
 } from './types';
 
 let uid = 1;
 const nextId = () => uid++;
+
+const BOSS_WORLD_POS: [number, number, number] = [0, 6, -6];
 
 const shuffle = <T,>(arr: T[]): T[] => {
   const a = [...arr];
@@ -28,6 +32,9 @@ const shuffle = <T,>(arr: T[]): T[] => {
   }
   return a;
 };
+
+/** The boss armour it gains once it enrages. */
+const ENRAGED_DEFENSE = EYE_OF_CTHULHU.enragedDefense;
 
 export interface EngineState extends GameState {
   effects: GameEffectEvent[];
@@ -43,10 +50,15 @@ export interface EngineState extends GameState {
   lastDrawn: string[];
   victory: boolean;
   defeat: boolean;
+  /** Boss attack damage is scaled once at game start for party size + difficulty. */
+  bossDamageMultiplier: number;
+  /** Remembered so "play again" can rebuild the same fight. */
+  lastRun: { classes: CharacterClass[]; difficulty: Difficulty } | null;
 }
 
 interface EngineActions {
-  newGame: (classes?: CharacterClass[], bossHp?: number) => void;
+  newGame: (classes?: CharacterClass[], difficulty?: Difficulty) => void;
+  restartGame: () => void;
   startDemo: () => void;
   endDemo: () => void;
   setDemoStep: (step: number) => void;
@@ -66,16 +78,26 @@ interface EngineActions {
   minionAttack: () => void;
 }
 
-const initialBoss = (hp?: number): GameState['boss'] => ({
+const initialBoss = (hp?: number, subtitle?: string): GameState['boss'] => ({
   name: EYE_OF_CTHULHU.name,
-  subtitle: EYE_OF_CTHULHU.subtitle,
+  subtitle: subtitle ?? EYE_OF_CTHULHU.subtitle,
   hp: hp ?? EYE_OF_CTHULHU.maxHp,
-  maxHp: EYE_OF_CTHULHU.maxHp,
+  maxHp: hp ?? EYE_OF_CTHULHU.maxHp,
   defense: 0,
   enraged: false,
   animState: 'IDLE',
   intent: null,
 });
+
+/** Scales a base attack for the current boss multiplier and enrage surcharge. */
+function resolveAttackDamage(
+  attack: BossActionCard,
+  multiplier: number,
+  enraged: boolean,
+): BossActionCard {
+  const bonus = enraged ? EYE_OF_CTHULHU.enrageDamageBonus : 0;
+  return { ...attack, damage: Math.round(attack.damage * multiplier + bonus) };
+}
 
 export const useGame = create<EngineState & EngineActions>((set, get) => ({
   turn: 1,
@@ -87,10 +109,13 @@ export const useGame = create<EngineState & EngineActions>((set, get) => ({
   discard: [],
   mana: 0,
   maxMana: 4,
+  handSize: HAND_SIZE,
   activePlayerId: 'melee',
   cameraMode: 'OVERVIEW',
   log: [],
   damageBreakdown: null,
+  resolutionHits: [],
+  difficulty: 'normal',
   playedThisTurn: [],
   effects: [],
   floats: [],
@@ -103,24 +128,32 @@ export const useGame = create<EngineState & EngineActions>((set, get) => ({
   lastDrawn: [],
   victory: false,
   defeat: false,
+  bossDamageMultiplier: 1,
+  lastRun: null,
 
-  newGame: (classes = ['melee', 'mage'], bossHp) => {
-    const players = classes.length ? classes.map((c) => createPlayer(c)) : createDemoRoster();
+  newGame: (classes = ['melee', 'mage'], difficulty = 'normal') => {
+    const party = classes.length ? classes : (['melee', 'mage'] as CharacterClass[]);
+    const players = createParty(party);
+    const scaled = scaleBossForParty(players.length, difficulty);
+    const subtitle = `${EYE_OF_CTHULHU.subtitle} · ${players.length} GUARDIAN${players.length > 1 ? 'S' : ''}`;
     set({
       turn: 1,
       phase: 'INTRO',
-      boss: initialBoss(bossHp),
+      boss: initialBoss(scaled.hp, subtitle),
       players,
-      deck: shuffle(STARTING_DECK),
+      deck: shuffle(buildStartingDeck(party)),
       hand: [],
       discard: [],
       mana: 0,
-      maxMana: 4,
+      maxMana: manaForParty(players.length),
+      handSize: handSizeForParty(players.length),
       activePlayerId: players[0]?.id ?? 'melee',
       cameraMode: 'OVERVIEW',
       log: [],
       damageBreakdown: null,
-          playedThisTurn: [],
+      resolutionHits: [],
+      difficulty,
+      playedThisTurn: [],
       effects: [],
       floats: [],
       shake: 0,
@@ -132,18 +165,27 @@ export const useGame = create<EngineState & EngineActions>((set, get) => ({
       lastDrawn: [],
       victory: false,
       defeat: false,
+      bossDamageMultiplier: scaled.damageMultiplier,
+      lastRun: { classes: party, difficulty },
     });
-    get().addLog('The Blood Moon rises over the village.', 'system');
+    get().addLog(`The Blood Moon rises. ${players.length} guardian(s) answer the call.`, 'system');
+  },
+
+  restartGame: () => {
+    const run = get().lastRun ?? { classes: ['melee', 'mage'] as CharacterClass[], difficulty: 'normal' as Difficulty };
+    get().newGame(run.classes, run.difficulty);
   },
 
   startDemo: () => {
     const players = createDemoRoster();
     // The scripted cards stay in the deck: prepareDemoHand() pulls them into the
     // hand at the start of the demo so the scenes always have what they need.
-    const demoDeck = shuffle(STARTING_DECK);
+    const demoDeck = shuffle(buildStartingDeck(['melee', 'mage']));
     set({
       turn: 1,
       phase: 'INTRO',
+      // The demo keeps a flat 200 HP and 1× damage so the scripted maths
+      // (20 − 15 = 5) stays exact and readable on screen.
       boss: initialBoss(200),
       players,
       deck: demoDeck,
@@ -151,11 +193,14 @@ export const useGame = create<EngineState & EngineActions>((set, get) => ({
       discard: [],
       mana: 0,
       maxMana: 4,
+      handSize: HAND_SIZE,
       activePlayerId: 'melee',
       cameraMode: 'OVERVIEW',
       log: [],
       damageBreakdown: null,
-          playedThisTurn: [],
+      resolutionHits: [],
+      difficulty: 'normal',
+      playedThisTurn: [],
       effects: [],
       floats: [],
       shake: 0,
@@ -167,6 +212,8 @@ export const useGame = create<EngineState & EngineActions>((set, get) => ({
       lastDrawn: [],
       victory: false,
       defeat: false,
+      bossDamageMultiplier: 1,
+      lastRun: null,
     });
     get().addLog('PRESENTATION DEMO — scripted demonstration of one full turn.', 'system');
     playSound('PHASE_CHANGE');
@@ -187,7 +234,7 @@ export const useGame = create<EngineState & EngineActions>((set, get) => ({
 
   drawPhase: () => {
     const s = get();
-    const needed = HAND_SIZE - s.hand.length;
+    const needed = s.handSize - s.hand.length;
     const deck = [...s.deck];
     const drawn: Card[] = [];
     for (let i = 0; i < needed; i++) {
@@ -199,6 +246,13 @@ export const useGame = create<EngineState & EngineActions>((set, get) => ({
       const card = deck.shift();
       if (card) drawn.push(card);
     }
+    // Preview the boss's next move so the party can plan around it.
+    const pool = EYE_OF_CTHULHU.attacks;
+    const preview = resolveAttackDamage(
+      pool[Math.floor(Math.random() * pool.length)],
+      s.bossDamageMultiplier,
+      s.boss.enraged,
+    );
     set({
       deck,
       hand: [...s.hand, ...drawn],
@@ -206,6 +260,8 @@ export const useGame = create<EngineState & EngineActions>((set, get) => ({
       phase: 'DRAW',
       lastDrawn: drawn.map((c) => c.id),
       damageBreakdown: null,
+      resolutionHits: [],
+      boss: { ...s.boss, intent: preview },
     });
     if (drawn.length) playSound('CARD_DRAW');
     get().addLog(`DRAW PHASE — drew ${drawn.length} card(s), Mana restored to ${s.maxMana}.`, 'phase');
@@ -230,155 +286,226 @@ export const useGame = create<EngineState & EngineActions>((set, get) => ({
     const hand = [...s.hand];
     hand.splice(handIndex, 1);
 
-    let boss = { ...s.boss };
-    let damageBossAmount = 0;
+    const boss = { ...s.boss };
+    let bossDamageRaw = 0;
     const effects = [...s.effects];
     const newFloats: FloatingNumber[] = [];
 
     const melee = players.find((p) => p.className === 'melee');
-    const caster = melee && card.id === 'taunt' ? melee : players.find((p) => p.id === s.activePlayerId) ?? players[0];
+    const caster =
+      card.effect === 'taunt' && melee
+        ? melee
+        : players.find((p) => p.id === s.activePlayerId) ?? players[0];
 
-    const bossWorldPos: [number, number, number] = [0, 6, -6];
-    const casterPos: [number, number, number] = caster?.slot === 0 ? [-4.5, 1.4, 6] : [4.5, 1.4, 6];
+    const casterPos: [number, number, number] = caster ? slotPosition(caster.slot) : [0, 1.4, 7.6];
+    const bossPos = BOSS_WORLD_POS;
 
-    switch (card.effect) {
-      case 'slash':
-      case 'precision_shot':
-      case 'water_bolt':
-        damageBossAmount = card.damage ?? 0;
-        if (caster) caster.animState = 'ATTACK';
+    const offenseColor = (effect: Card['effect']) => {
+      switch (effect) {
+        case 'fireball':
+          return '#ff9a3d';
+        case 'dark_bolt':
+          return '#c084fc';
+        case 'life_steal':
+          return '#ff4d6d';
+        case 'water_bolt':
+          return '#59a6ff';
+        case 'slash':
+          return '#ffd479';
+        case 'armor_break':
+          return '#ff7a3d';
+        default:
+          return '#bfe8a0';
+      }
+    };
+
+    const offenseEffects = [
+      'slash',
+      'precision_shot',
+      'water_bolt',
+      'fireball',
+      'dark_bolt',
+      'volley',
+      'life_steal',
+      'armor_break',
+    ] as const;
+
+    if ((offenseEffects as readonly string[]).includes(card.effect)) {
+      const hits = card.hits ?? 1;
+      bossDamageRaw = (card.damage ?? 0) * hits;
+      if (card.armorBreak) {
+        boss.defense = Math.max(0, boss.defense - card.armorBreak);
+      }
+      if (caster) caster.animState = 'ATTACK';
+      const color = offenseColor(card.effect);
+      for (let h = 0; h < hits; h++) {
         effects.push({
           id: nextId(),
           kind: card.effect === 'slash' ? 'slash' : 'projectile',
           from: casterPos,
-          to: bossWorldPos,
-          color: card.effect === 'water_bolt' ? '#59a6ff' : card.effect === 'slash' ? '#ffd479' : '#bfe8a0',
-          duration: 0.85,
+          to: bossPos,
+          color,
+          duration: 0.85 + h * 0.12,
         });
-        playSound(card.effect === 'slash' ? 'SWORD_ATTACK' : 'MAGIC_CAST');
+      }
+      playSound(card.effect === 'slash' || card.effect === 'precision_shot' ? 'SWORD_ATTACK' : 'MAGIC_CAST');
+      for (let h = 0; h < hits; h++) {
         newFloats.push({
           id: nextId(),
-          text: `-${damageBossAmount}`,
-          position: [bossWorldPos[0], bossWorldPos[1] + 3, bossWorldPos[2]],
+          text: `-${card.damage ?? 0}`,
+          position: [bossPos[0], bossPos[1] + 2.6 + h * 0.9, bossPos[2]],
           color: '#ff5f5f',
           kind: 'damage',
           born: performance.now(),
         });
-        break;
-      case 'shield': {
-        const bonus = card.defense ?? 0;
-        players.forEach((p) => {
-          if (p.id !== caster?.id) return;
-          p.armorBonus = Math.max(p.armorBonus, bonus);
-          p.defense = p.baseDefense + p.armorBonus;
-        });
-        if (caster) caster.animState = 'CAST';
-        effects.push({
-          id: nextId(),
-          kind: 'shield',
-          from: casterPos,
-          to: casterPos,
-          color: '#d8b06a',
-          duration: 1.4,
-        });
+      }
+      if (card.armorBreak) {
         newFloats.push({
           id: nextId(),
-          text: `+${card.defense} DEF`,
-          position: [casterPos[0], casterPos[1] + 2.2, casterPos[2]],
-          color: '#ffd479',
+          text: `ARMOR −${card.armorBreak}`,
+          position: [bossPos[0], bossPos[1] + 1.6, bossPos[2]],
+          color: '#ffb060',
           kind: 'block',
           born: performance.now(),
         });
-        playSound('CARD_PLAY');
-        break;
       }
-      case 'mana_shield': {
-        const bonus = card.defense ?? 0;
-        players.forEach((p) => {
-          p.armorBonus = Math.max(p.armorBonus, bonus);
-          p.defense = p.baseDefense + p.armorBonus;
-        });
-        if (caster) caster.animState = 'CAST';
-        players.forEach((p) => {
-          effects.push({
-            id: nextId(),
-            kind: 'shield',
-            from: [p.slot === 0 ? -4.5 : 4.5, 1.4, 6],
-            to: [p.slot === 0 ? -4.5 : 4.5, 1.4, 6],
-            color: '#59a6ff',
-            duration: 1.3,
+    } else {
+      switch (card.effect) {
+        case 'shield': {
+          const bonus = card.defense ?? 0;
+          players.forEach((p) => {
+            if (p.id !== caster?.id) return;
+            p.armorBonus = Math.max(p.armorBonus, bonus);
+            p.defense = p.baseDefense + p.armorBonus;
           });
-        });
-        playSound('MAGIC_CAST');
-        break;
-      }
-      case 'taunt':
-        players.forEach((p) => (p.taunting = false));
-        if (melee) melee.taunting = true;
-        effects.push({
-          id: nextId(),
-          kind: 'taunt',
-          from: [melee?.slot === 0 ? -4.5 : 4.5, 1.6, 6],
-          to: bossWorldPos,
-          color: '#ff4d4d',
-          duration: 1.2,
-        });
-        playSound('CARD_PLAY');
-        break;
-      case 'summon':
-        damageBossAmount = card.damage ?? 0;
-        if (caster) caster.animState = 'CAST';
-        effects.push({
-          id: nextId(),
-          kind: 'summon',
-          from: [casterPos[0], casterPos[1], casterPos[2]],
-          to: [casterPos[0] + 1.6, 0.6, casterPos[2] - 0.6],
-          color: '#c084fc',
-          duration: 1.6,
-        });
-        newFloats.push({
-          id: nextId(),
-          text: `-${damageBossAmount}`,
-          position: [bossWorldPos[0], bossWorldPos[1] + 2.4, bossWorldPos[2]],
-          color: '#c084fc',
-          kind: 'damage',
-          born: performance.now(),
-        });
-        playSound('CARD_PLAY');
-        break;
-      case 'heal': {
-        const wounded = [...players].filter((p) => p.alive).sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
-        if (wounded) {
-          const before = wounded.hp;
-          wounded.hp = Math.min(wounded.maxHp, wounded.hp + (card.healing ?? 0));
+          if (caster) caster.animState = 'CAST';
+          effects.push({ id: nextId(), kind: 'shield', from: casterPos, to: casterPos, color: '#d8b06a', duration: 1.4 });
           newFloats.push({
             id: nextId(),
-            text: `+${wounded.hp - before} HP`,
-            position: [wounded.slot === 0 ? -4.5 : 4.5, 2.6, 6],
-            color: '#7ee08a',
-            kind: 'heal',
+            text: `+${card.defense} DEF`,
+            position: [casterPos[0], casterPos[1] + 2.2, casterPos[2]],
+            color: '#ffd479',
+            kind: 'block',
             born: performance.now(),
           });
+          playSound('CARD_PLAY');
+          break;
         }
-        if (caster) caster.animState = 'CAST';
-        effects.push({
-          id: nextId(),
-          kind: 'heal',
-          from: casterPos,
-          to: casterPos,
-          color: '#7ee08a',
-          duration: 1.1,
-        });
-        playSound('CARD_PLAY');
-        break;
+        case 'mana_shield': {
+          const bonus = card.defense ?? 0;
+          players.forEach((p) => {
+            p.armorBonus = Math.max(p.armorBonus, bonus);
+            p.defense = p.baseDefense + p.armorBonus;
+          });
+          if (caster) caster.animState = 'CAST';
+          players.forEach((p) => {
+            const pos = slotPosition(p.slot);
+            effects.push({ id: nextId(), kind: 'shield', from: pos, to: pos, color: '#59a6ff', duration: 1.3 });
+          });
+          playSound('MAGIC_CAST');
+          break;
+        }
+        case 'taunt':
+          players.forEach((p) => (p.taunting = false));
+          if (melee) melee.taunting = true;
+          effects.push({
+            id: nextId(),
+            kind: 'taunt',
+            from: melee ? slotPosition(melee.slot) : casterPos,
+            to: bossPos,
+            color: '#ff4d4d',
+            duration: 1.2,
+          });
+          playSound('CARD_PLAY');
+          break;
+        case 'summon':
+          bossDamageRaw = card.damage ?? 0;
+          if (caster) caster.animState = 'CAST';
+          effects.push({
+            id: nextId(),
+            kind: 'summon',
+            from: casterPos,
+            to: [casterPos[0] + 1.6, 0.6, casterPos[2] - 0.6],
+            color: '#c084fc',
+            duration: 1.6,
+          });
+          newFloats.push({
+            id: nextId(),
+            text: `-${bossDamageRaw}`,
+            position: [bossPos[0], bossPos[1] + 2.4, bossPos[2]],
+            color: '#c084fc',
+            kind: 'damage',
+            born: performance.now(),
+          });
+          playSound('CARD_PLAY');
+          break;
+        case 'heal': {
+          const amount = card.teamHealing ?? card.healing ?? 0;
+          const targets = card.teamHealing
+            ? players.filter((p) => p.alive)
+            : [players.filter((p) => p.alive).sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0]].filter(
+                (p): p is Player => Boolean(p),
+              );
+          targets.forEach((p) => {
+            const before = p.hp;
+            p.hp = Math.min(p.maxHp, p.hp + amount);
+            if (p.hp !== before) {
+              newFloats.push({
+                id: nextId(),
+                text: `+${p.hp - before} HP`,
+                position: [slotPosition(p.slot)[0], 2.6, slotPosition(p.slot)[2]],
+                color: '#7ee08a',
+                kind: 'heal',
+                born: performance.now(),
+              });
+            }
+          });
+          if (caster) caster.animState = 'CAST';
+          effects.push({ id: nextId(), kind: 'heal', from: casterPos, to: casterPos, color: '#7ee08a', duration: 1.1 });
+          playSound('CARD_PLAY');
+          break;
+        }
+        case 'mana_potion':
+          newFloats.push({
+            id: nextId(),
+            text: `+${card.manaRestore} MANA`,
+            position: [casterPos[0], casterPos[1] + 2.2, casterPos[2]],
+            color: '#59a6ff',
+            kind: 'block',
+            born: performance.now(),
+          });
+          playSound('MAGIC_CAST');
+          break;
       }
     }
 
-    let floats = [...s.floats, ...newFloats];
+    // Boss armor blunts the hit, but never below a single point of chip damage.
+    let bossDealt = 0;
+    if (bossDamageRaw > 0) {
+      bossDealt = Math.max(1, bossDamageRaw - boss.defense);
+    }
 
-    if (damageBossAmount > 0) {
-      boss.hp = Math.max(0, boss.hp - damageBossAmount);
+    const floats = [...s.floats, ...newFloats];
+
+    if (bossDealt > 0) {
+      boss.hp = Math.max(0, boss.hp - bossDealt);
       boss.animState = boss.hp <= 0 ? 'DEFEATED' : 'HIT';
+    }
+
+    // Life steal heals the caster for a slice of the damage dealt.
+    if (card.effect === 'life_steal' && caster && bossDealt > 0) {
+      const before = caster.hp;
+      caster.hp = Math.min(caster.maxHp, caster.hp + (card.healing ?? 0));
+      if (caster.hp !== before) {
+        floats.push({
+          id: nextId(),
+          text: `+${caster.hp - before} HP`,
+          position: [casterPos[0], casterPos[1] + 2.2, casterPos[2]],
+          color: '#7ee08a',
+          kind: 'heal',
+          born: performance.now(),
+        });
+      }
     }
 
     const defeated = boss.hp <= 0;
@@ -386,7 +513,11 @@ export const useGame = create<EngineState & EngineActions>((set, get) => ({
     if (enraged && !boss.enraged) {
       boss.enraged = true;
       boss.animState = 'ENRAGED';
-      get().addLog('The Eye of Cthulhu is ENRAGED! Its movements quicken with bloodlust.', 'boss');
+      boss.defense = Math.max(boss.defense, ENRAGED_DEFENSE);
+      get().addLog(
+        `The Eye of Cthulhu is ENRAGED! It gains ${ENRAGED_DEFENSE} armor and hits harder.`,
+        'boss',
+      );
     }
 
     set({
@@ -394,13 +525,16 @@ export const useGame = create<EngineState & EngineActions>((set, get) => ({
       hand,
       boss,
       discard: [...s.discard, card],
-      mana: s.mana - card.cost,
+      mana: Math.max(0, s.mana - card.cost + (card.manaRestore ?? 0)),
       effects,
       floats,
       playedThisTurn: [...s.playedThisTurn, card.name],
     });
 
     get().addLog(`Plays ${card.name}. (${card.cost} Mana)`, 'player');
+    if (bossDamageRaw > 0) {
+      get().addLog(`${card.name} hits for ${bossDealt}${boss.defense > 0 ? ` (${bossDamageRaw} − ${boss.defense} boss armor)` : ''}.`, 'damage');
+    }
 
     setTimeout(() => {
       const st = get();
@@ -424,14 +558,7 @@ export const useGame = create<EngineState & EngineActions>((set, get) => ({
           shake: 1.4,
           effects: [
             ...get().effects,
-            {
-              id: nextId(),
-              kind: 'explosion',
-              from: [0, 6, -6],
-              to: [0, 6, -6],
-              color: '#ff4d4d',
-              duration: 2,
-            },
+            { id: nextId(), kind: 'explosion', from: BOSS_WORLD_POS, to: BOSS_WORLD_POS, color: '#ff4d4d', duration: 2 },
           ],
         });
         get().addLog('VICTORY! The Eye of Cthulhu dissolves into red mist. The village is safe.', 'system');
@@ -453,30 +580,35 @@ export const useGame = create<EngineState & EngineActions>((set, get) => ({
     }
 
     const pool = EYE_OF_CTHULHU.attacks;
-    const forced = forceCardId ? pool.find((a) => a.id === forceCardId) : undefined;
-    const card: BossActionCard = forced ?? pool[Math.floor(Math.random() * pool.length)];
-    const targeted = s.players.find((p) => p.taunting && p.alive) ?? [...s.players].filter((p) => p.alive)[0];
+    const base = (forceCardId ? pool.find((a) => a.id === forceCardId) : undefined) ?? pool[Math.floor(Math.random() * pool.length)];
+    const card: BossActionCard = resolveAttackDamage(base, s.bossDamageMultiplier, s.boss.enraged);
+    const alive = s.players.filter((p) => p.alive);
+    const target = s.players.find((p) => p.taunting && p.alive) ?? alive[0];
+
+    const struck = card.aoe ? alive : target ? [target] : [];
+    const effects = [...s.effects];
+    struck.forEach((t) => {
+      effects.push({
+        id: nextId(),
+        kind: 'impact',
+        from: BOSS_WORLD_POS,
+        to: [slotPosition(t.slot)[0], 1.5, slotPosition(t.slot)[2]],
+        color: '#ff4d4d',
+        duration: 1.1,
+      });
+    });
 
     set({
       phase: 'BOSS_ACTION',
       boss: { ...s.boss, intent: card, animState: 'ATTACK' },
       cameraMode: 'ATTACK',
-      shake: 0.9,
-      players: s.players.map((p) => (p.id === targeted?.id ? { ...p, animState: 'HIT' } : p)),
-      effects: [
-        ...s.effects,
-        {
-          id: nextId(),
-          kind: 'impact',
-          from: [0, 6, -6],
-          to: [targeted?.slot === 0 ? -4.5 : 4.5, 1.5, 6],
-          color: '#ff4d4d',
-          duration: 1.1,
-        },
-      ],
+      shake: card.aoe ? 1.2 : 0.9,
+      players: s.players.map((p) => (struck.some((t) => t.id === p.id) ? { ...p, animState: 'HIT' } : p)),
+      effects,
     });
     playSound('BOSS_ATTACK');
-    get().addLog(`BOSS ACTION — ${card.name} (${card.damage} damage) targeting ${targeted?.name ?? 'the party'}.`, 'boss');
+    const who = card.aoe ? 'the whole party' : target?.name ?? 'the party';
+    get().addLog(`BOSS ACTION — ${card.name} (${card.damage} damage) targeting ${who}.`, 'boss');
     setTimeout(() => {
       const st = get();
       if (st.phase === 'BOSS_ACTION') set({ boss: { ...st.boss, animState: st.boss.enraged ? 'ENRAGED' : 'IDLE' } });
@@ -487,25 +619,65 @@ export const useGame = create<EngineState & EngineActions>((set, get) => ({
     const s = get();
     if (s.victory || s.defeat) return;
     const raw = s.boss.intent?.damage ?? 0;
-    const target =
-      s.players.find((p) => p.id === overrideTargetId) ??
-      s.players.find((p) => p.taunting && p.alive) ??
-      [...s.players].filter((p) => p.alive).sort((a, b) => b.defense - a.defense)[0] ??
-      s.players[0];
+    const aoe = s.boss.intent?.aoe ?? false;
 
-    if (!target) {
-      set({ phase: 'RESOLUTION' });
+    let targets: Player[];
+    if (aoe) {
+      targets = s.players.filter((p) => p.alive);
+    } else {
+      const single =
+        s.players.find((p) => p.id === overrideTargetId) ??
+        s.players.find((p) => p.taunting && p.alive) ??
+        [...s.players].filter((p) => p.alive).sort((a, b) => b.defense - a.defense)[0] ??
+        s.players[0];
+      targets = single ? [single] : [];
+    }
+
+    if (targets.length === 0) {
+      set({ phase: 'RESOLUTION', resolutionHits: [] });
       return;
     }
 
-    const defense = target.defense;
-    const final = Math.max(0, raw - defense);
-    // Armor persists until removed (per card rules); Taunt only lasts its turn.
+    const hitIds = new Set(targets.map((t) => t.id));
+    const hits: ResolutionHit[] = [];
+    const newFloats: FloatingNumber[] = [];
+
     const players: Player[] = s.players.map((p) => {
-      if (p.id !== target.id) {
+      if (!hitIds.has(p.id)) {
         return { ...p, taunting: false, animState: 'IDLE' as Player['animState'] };
       }
+      const defense = p.defense;
+      const final = Math.max(0, raw - defense);
       const hp = Math.max(0, p.hp - final);
+      const pos = slotPosition(p.slot);
+      hits.push({
+        targetId: p.id,
+        targetName: p.name,
+        raw,
+        defense,
+        final,
+        hpAfter: hp,
+        down: hp <= 0,
+      });
+      newFloats.push(
+        final > 0
+          ? {
+              id: nextId(),
+              text: `-${final}`,
+              position: [pos[0], 2.8, pos[2]],
+              color: '#ff7a7a',
+              kind: 'damage',
+              born: performance.now(),
+            }
+          : {
+              id: nextId(),
+              text: 'BLOCKED',
+              position: [pos[0], 2.8, pos[2]],
+              color: '#8ad7ff',
+              kind: 'block',
+              born: performance.now(),
+            },
+      );
       return {
         ...p,
         hp,
@@ -515,48 +687,44 @@ export const useGame = create<EngineState & EngineActions>((set, get) => ({
       };
     });
 
+    const primary = hits[0];
     const breakdown: DamageBreakdown = {
       raw,
-      defense,
-      final,
-      targetId: target.id,
-      targetName: target.name,
+      defense: primary?.defense ?? 0,
+      final: hits.reduce((sum, h) => sum + h.final, 0),
+      targetId: primary?.targetId ?? '',
+      targetName: aoe ? 'the party' : primary?.targetName ?? 'the party',
     };
+
+    // Blood Drain: the boss heals from the damage it lands.
+    let boss = { ...s.boss };
+    let bossHealed = 0;
+    if (s.boss.intent?.lifesteal && breakdown.final > 0 && boss.hp > 0) {
+      const before = boss.hp;
+      boss.hp = Math.min(boss.maxHp, boss.hp + s.boss.intent.lifesteal);
+      bossHealed = boss.hp - before;
+    }
 
     set({
       phase: 'RESOLUTION',
       players,
+      boss,
       damageBreakdown: breakdown,
+      resolutionHits: hits,
       cameraMode: 'ATTACK',
-      shake: 0.7,
-      floats:
-        final > 0
-          ? [
-              ...s.floats,
-              {
-                id: nextId(),
-                text: `-${final}`,
-                position: [target.slot === 0 ? -4.5 : 4.5, 2.8, 6],
-                color: '#ff7a7a',
-                kind: 'damage',
-                born: performance.now(),
-              },
-            ]
-          : [
-              ...s.floats,
-              {
-                id: nextId(),
-                text: 'BLOCKED',
-                position: [target.slot === 0 ? -4.5 : 4.5, 2.8, 6],
-                color: '#8ad7ff',
-                kind: 'block',
-                born: performance.now(),
-              },
-            ],
+      shake: aoe ? 1 : 0.7,
+      floats: [...s.floats, ...newFloats],
     });
 
-    if (final > 0) playSound('PLAYER_HIT');
-    get().addLog(`${raw} DAMAGE − ${defense} DEFENSE = ${final} DAMAGE to ${target.name}.`, 'damage');
+    if (breakdown.final > 0) playSound('PLAYER_HIT');
+    if (aoe) {
+      get().addLog(`${raw} DAMAGE swept the party — ${breakdown.final} total after Defense.`, 'damage');
+    } else {
+      get().addLog(`${raw} DAMAGE − ${breakdown.defense} DEFENSE = ${breakdown.final} DAMAGE to ${breakdown.targetName}.`, 'damage');
+    }
+    if (bossHealed > 0) {
+      get().addLog(`The Eye drinks deep, healing ${bossHealed} HP.`, 'boss');
+    }
 
     const allDead = players.every((p) => !p.alive);
     if (allDead) {
@@ -574,13 +742,21 @@ export const useGame = create<EngineState & EngineActions>((set, get) => ({
   nextTurn: () => {
     const s = get();
     if (s.victory || s.defeat) return;
+    const stillEnraged = s.boss.enraged && s.boss.hp > 0;
     set({
       turn: s.turn + 1,
       phase: 'DRAW',
-          damageBreakdown: null,
+      damageBreakdown: null,
+      resolutionHits: [],
       playedThisTurn: [],
       cameraMode: 'OVERVIEW',
-      boss: { ...s.boss, intent: null, animState: s.boss.enraged ? 'ENRAGED' : 'IDLE' },
+      boss: {
+        ...s.boss,
+        intent: null,
+        animState: stillEnraged ? 'ENRAGED' : 'IDLE',
+        // Boss armor is permanent once it enrages, and clears otherwise.
+        defense: stillEnraged ? Math.max(s.boss.defense, ENRAGED_DEFENSE) : 0,
+      },
       players: s.players.map((p) => ({
         ...p,
         defense: p.baseDefense,
@@ -594,20 +770,22 @@ export const useGame = create<EngineState & EngineActions>((set, get) => ({
   damageBoss: (amount, label) => {
     const s = get();
     if (s.boss.hp <= 0) return;
-    const hp = Math.max(0, s.boss.hp - amount);
+    const dealt = Math.max(1, amount - s.boss.defense);
+    const hp = Math.max(0, s.boss.hp - dealt);
     const enraged = hp / s.boss.maxHp <= EYE_OF_CTHULHU.enrageThreshold;
     set({
       boss: {
         ...s.boss,
         hp,
         enraged: enraged || s.boss.enraged,
+        defense: enraged && !s.boss.enraged ? Math.max(s.boss.defense, ENRAGED_DEFENSE) : s.boss.defense,
         animState: hp <= 0 ? 'DEFEATED' : 'HIT',
       },
       floats: [
         ...s.floats,
         {
           id: nextId(),
-          text: `-${amount}`,
+          text: `-${dealt}`,
           position: [0, 9, -6],
           color: '#ff5f5f',
           kind: 'damage',
@@ -633,7 +811,7 @@ export const useGame = create<EngineState & EngineActions>((set, get) => ({
           shake: 1.4,
           effects: [
             ...get().effects,
-            { id: nextId(), kind: 'explosion', from: [0, 6, -6], to: [0, 6, -6], color: '#ff4d4d', duration: 2 },
+            { id: nextId(), kind: 'explosion', from: BOSS_WORLD_POS, to: BOSS_WORLD_POS, color: '#ff4d4d', duration: 2 },
           ],
         });
         get().addLog('VICTORY! The Eye of Cthulhu dissolves into red mist. The village is safe.', 'system');
@@ -645,7 +823,7 @@ export const useGame = create<EngineState & EngineActions>((set, get) => ({
     const s = get();
     if (s.boss.hp <= 0 || s.victory || s.defeat) return;
     playSound('MAGIC_CAST');
-    get().damageBoss(6, 'The summoned minion strikes the boss for 6.');
+    get().damageBoss(6, 'The summoned minion strikes the boss.');
   },
 
   pruneTransients: () => {

@@ -2,12 +2,11 @@ import { useMemo, useRef } from 'react';
 import { useFrame } from '@react-three/fiber';
 import * as THREE from 'three';
 import { useGlowTexture } from '../../systems/textures';
-import { CHARACTERS } from '../../data/characters';
+import { CHARACTERS, slotPosition } from '../../data/characters';
 import type { CharacterClass, Player, PlayerAnimState } from '../../game/types';
 
-export function playerWorldPos(slot: number): [number, number, number] {
-  return slot === 0 ? [-4.5, 1.4, 6] : [4.5, 1.4, 6];
-}
+/** @deprecated use slotPosition from data/characters */
+export const playerWorldPos = slotPosition;
 
 interface GuardianProps {
   player: Player;

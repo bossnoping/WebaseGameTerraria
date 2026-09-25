@@ -59,6 +59,7 @@ function SceneContents() {
   useFrame(() => pruneTransients());
 
   const hpRatio = boss.maxHp > 0 ? boss.hp / boss.maxHp : 0;
+  const summoner = players.find((p) => p.className === 'summoner');
 
   return (
     <>
@@ -73,7 +74,7 @@ function SceneContents() {
         <Guardian key={p.id} player={p} isActive={p.id === activePlayerId} />
       ))}
 
-      {players[1] && <Minion ownerSlot={players[1].slot} active={summonActive} />}
+      {summoner && <Minion ownerSlot={summoner.slot} active={summonActive} />}
 
       <EffectLayer />
       <FloatingNumbers />

@@ -3,11 +3,13 @@ import GameCanvas from './components/GameCanvas';
 import MainMenu from './scenes/MainMenu';
 import HowToPlay from './scenes/HowToPlay';
 import DlcScreen from './scenes/DlcScreen';
+import PartySelect from './scenes/PartySelect';
 import BattleScene from './scenes/BattleScene';
 import { useGame } from './game/GameEngine';
 import { isMuted, playSound, setMuted, unlockAudio } from './systems/audio';
+import type { CharacterClass, Difficulty } from './game/types';
 
-type Screen = 'MENU' | 'HOW_TO_PLAY' | 'DLC' | 'BATTLE';
+type Screen = 'MENU' | 'HOW_TO_PLAY' | 'DLC' | 'PARTY' | 'BATTLE';
 
 export default function App() {
   const [screen, setScreen] = useState<Screen>('MENU');
@@ -28,9 +30,9 @@ export default function App() {
     return () => window.removeEventListener('pointerdown', unlock);
   }, []);
 
-  const startGame = useCallback(() => {
+  const startGame = useCallback((classes: CharacterClass[], difficulty: Difficulty) => {
     const g = useGame.getState();
-    g.newGame(['melee', 'mage']);
+    g.newGame(classes, difficulty);
     g.setPhase('INTRO');
     setScreen('BATTLE');
     playSound('PHASE_CHANGE');
@@ -61,13 +63,14 @@ export default function App() {
 
       {screen === 'MENU' && (
         <MainMenu
-          onStart={startGame}
+          onStart={() => setScreen('PARTY')}
           onDemo={startDemo}
           onHowToPlay={() => setScreen('HOW_TO_PLAY')}
           onDlc={() => setScreen('DLC')}
         />
       )}
 
+      {screen === 'PARTY' && <PartySelect onStart={startGame} onBack={() => setScreen('MENU')} />}
       {screen === 'HOW_TO_PLAY' && <HowToPlay onBack={() => setScreen('MENU')} />}
       {screen === 'DLC' && <DlcScreen onBack={() => setScreen('MENU')} />}
       {screen === 'BATTLE' && <BattleScene onExit={exitToMenu} />}
